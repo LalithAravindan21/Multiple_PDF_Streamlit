@@ -1,76 +1,88 @@
 import streamlit as st
 from PyPDF2 import PdfReader
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.vectorstores import FAISS
-from langchain.chat_models import ChatOpenAI
-from langchain.chains import RetrievalQA
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from transformers import pipeline
 import os
 
-# Load environment variables if needed
-from dotenv import load_dotenv
-load_dotenv()
+# Function to extract text from a PDF
+def extract_text_from_pdf(pdf_file):
+    pdf_reader = PdfReader(pdf_file)
+    text = ""
+    for page in pdf_reader.pages:
+        text += page.extract_text()
+    return text
 
-# Streamlit app setup
-st.title("PDF Comparison and Analysis Assistant")
-st.write("Upload multiple PDF documents to compare their content and ask questions.")
+# Function to compare documents based on cosine similarity
+def compare_documents(doc1, doc2):
+    # Convert documents to a list of text
+    documents = [doc1, doc2]
 
-# File upload for PDFs
-uploaded_files = st.file_uploader("Upload PDF files", type="pdf", accept_multiple_files=True)
-docs = []
+    # Initialize TF-IDF Vectorizer
+    vectorizer = TfidfVectorizer(stop_words='english')
 
-# Check for API key in environment
-if not os.getenv("OPENAI_API_KEY"):
-    st.error("Please set your OpenAI API key in a .env file as 'OPENAI_API_KEY'")
+    # Convert documents into TF-IDF vectors
+    tfidf_matrix = vectorizer.fit_transform(documents)
 
-if uploaded_files and os.getenv("OPENAI_API_KEY"):
-    # Load PDFs and extract text
-    for file in uploaded_files:
-        pdf_reader = PdfReader(file)
-        text = ""
-        for page in pdf_reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text
-        docs.append(text)
+    # Calculate cosine similarity
+    similarity_matrix = cosine_similarity(tfidf_matrix)
 
-    # Initialize embeddings and vector store
-    embeddings = OpenAIEmbeddings()
-    faiss_index = FAISS.from_texts(docs, embeddings)
+    # Return similarity score between the two documents
+    return similarity_matrix[0, 1]
 
-    # RAG setup with OpenAI’s model
-    chat_model = ChatOpenAI(temperature=0.5)
-    retrieval_chain = RetrievalQA.from_chain_type(
-        llm=chat_model,
-        chain_type="map_reduce",
-        retriever=faiss_index.as_retriever()
-    )
+# Function to generate insights based on document content (using transformers)
+def generate_insights(text):
+    summarizer = pipeline("summarization")
+    summary = summarizer(text, max_length=200, min_length=50, do_sample=False)
+    return summary[0]['summary_text']
 
-    # Function to compare PDFs and highlight differences
-    def compare_pdfs(docs):
-        comparison_results = []
-        for i in range(len(docs) - 1):
-            comparison_query = f"Compare the content differences between Document {i+1} and Document {i+2}."
-            result = retrieval_chain.run(input_documents=[docs[i], docs[i+1]], question=comparison_query)
-            comparison_results.append(result)
-        return comparison_results
+# Function to answer questions from document content using QA pipeline
+def answer_question(question, context):
+    qa_pipeline = pipeline("question-answering")
+    result = qa_pipeline(question=question, context=context)
+    return result['answer']
 
-    # Display comparison results
-    if len(docs) > 1:
-        comparison_results = compare_pdfs(docs)
-        for i, result in enumerate(comparison_results):
-            st.write(f"Comparison between Document {i+1} and Document {i+2}:")
-            st.write(result)
-    else:
-        st.info("Please upload at least two PDF files to compare.")
+# Streamlit app
+def main():
+    st.title("PDF Document Comparison & Assistant")
+    st.write("This app compares PDF documents, generates insights, and answers questions about the documents.")
+    
+    # File upload
+    uploaded_files = st.file_uploader("Upload PDF files", type="pdf", accept_multiple_files=True)
+    
+    if len(uploaded_files) == 2:
+        # Extract text from uploaded PDFs
+        pdf_texts = []
+        for uploaded_file in uploaded_files:
+            text = extract_text_from_pdf(uploaded_file)
+            pdf_texts.append(text)
 
-    # Assistant capability
-    user_question = st.text_input("Ask a question about the documents:")
-    if user_question:
-        answer = retrieval_chain.run(input_documents=docs, question=user_question)
-        st.write("Answer:", answer)
+        # Compare documents
+        similarity_score = compare_documents(pdf_texts[0], pdf_texts[1])
+        st.write(f"Similarity score between the two documents: {similarity_score:.2f}")
 
-else:
-    if not uploaded_files:
-        st.info("Please upload PDF files to start comparing and analyzing.")
-    else:
-        st.error("OpenAI API key is missing. Please add it to a .env file as 'OPENAI_API_KEY'.")
+        # Generate insights
+        st.subheader("Generated Insights")
+        document_1_summary = generate_insights(pdf_texts[0])
+        document_2_summary = generate_insights(pdf_texts[1])
+
+        st.write(f"Document 1 Summary: {document_1_summary}")
+        st.write(f"Document 2 Summary: {document_2_summary}")
+
+        # QA Section
+        st.subheader("Ask a Question About the Documents")
+        question = st.text_input("Enter your question:")
+        
+        if question:
+            # Combine both documents into one context for QA
+            combined_text = pdf_texts[0] + "\n\n" + pdf_texts[1]
+            answer = answer_question(question, combined_text)
+            st.write(f"Answer: {answer}")
+
+    elif len(uploaded_files) > 2:
+        st.warning("Please upload exactly two PDF files for comparison.")
+    elif len(uploaded_files) == 0:
+        st.warning("Please upload two PDF files to compare.")
+
+if __name__ == "__main__":
+    main()
