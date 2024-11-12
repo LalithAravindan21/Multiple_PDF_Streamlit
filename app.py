@@ -1,106 +1,82 @@
 import streamlit as st
-from PyPDF2 import PdfReader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-import os
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-import google.generativeai as genai
+import PyPDF2
+from langchain.text_splitter import CharacterTextSplitter
 from langchain.vectorstores import FAISS
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.chains.question_answering import load_qa_chain
-from langchain.prompts import PromptTemplate
-from dotenv import load_dotenv
+from langchain.embeddings import OpenAIEmbeddings
+from langchain.llms import OpenAI
+from langchain.chains import ConversationalRetrievalChain
+from langchain.agents import initialize_agent, Tool
+from langchain.agents import AgentType
 
-load_dotenv()
-os.getenv("GOOGLE_API_KEY")
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+# Function to extract text from PDFs
+def extract_text_from_pdf(file_path):
+    with open(file_path, "rb") as file:
+        reader = PyPDF2.PdfReader(file)
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text()
+    return text
 
+# Function to split text into manageable chunks
+def split_text(text, chunk_size=1000):
+    text_splitter = CharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=200)
+    return text_splitter.split_text(text)
 
+# Function to create FAISS index for the documents
+def create_faiss_index(text_chunks):
+    embeddings = OpenAIEmbeddings()
+    faiss_index = FAISS.from_texts(text_chunks, embeddings)
+    return faiss_index
 
-
-
-
-def get_pdf_text(pdf_docs):
-    text=""
-    for pdf in pdf_docs:
-        pdf_reader= PdfReader(pdf)
-        for page in pdf_reader.pages:
-            text+= page.extract_text()
-    return  text
-
-
-
-def get_text_chunks(text):
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=10000, chunk_overlap=1000)
-    chunks = text_splitter.split_text(text)
-    return chunks
-
-
-def get_vector_store(text_chunks):
-    embeddings = GoogleGenerativeAIEmbeddings(model = "models/embedding-001")
-    vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
-    vector_store.save_local("faiss_index")
-
-
-def get_conversational_chain():
-
-    prompt_template = """
-    Answer the question as detailed as possible from the provided context, make sure to provide all the details, if the answer is not in
-    provided context just say, "answer is not available in the context", don't provide the wrong answer\n\n
-    Context:\n {context}?\n
-    Question: \n{question}\n
-
-    Answer:
-    """
-
-    model = ChatGoogleGenerativeAI(model="gemini-pro",
-                             temperature=0.3)
-
-    prompt = PromptTemplate(template = prompt_template, input_variables = ["context", "question"])
-    chain = load_qa_chain(model, chain_type="stuff", prompt=prompt)
-
-    return chain
-
-
-
-def user_input(user_question):
-    embeddings = GoogleGenerativeAIEmbeddings(model = "models/embedding-001")
+# Function to compare multiple PDFs
+def compare_pdfs(file_paths):
+    # Extract text from each PDF and split them into chunks
+    all_chunks = []
+    for file_path in file_paths:
+        text = extract_text_from_pdf(file_path)
+        chunks = split_text(text)
+        all_chunks.extend(chunks)
     
-    new_db = FAISS.load_local("faiss_index", embeddings)
-    docs = new_db.similarity_search(user_question)
-
-    chain = get_conversational_chain()
-
+    # Create FAISS index for all documents
+    faiss_index = create_faiss_index(all_chunks)
     
-    response = chain(
-        {"input_documents":docs, "question": user_question}
-        , return_only_outputs=True)
+    # Create retrieval chain for querying the index
+    retriever = faiss_index.as_retriever()
+    qa_chain = ConversationalRetrievalChain.from_llm(OpenAI(), retriever)
+    
+    return qa_chain
 
-    print(response)
-    st.write("Reply: ", response["output_text"])
+# Function to process user queries
+def process_query(query, qa_chain):
+    return qa_chain.run(query)
 
+# Streamlit interface
+st.title("PDF Document Comparison and Chatbot Interface")
 
+# File upload for multiple PDFs
+uploaded_files = st.file_uploader("Upload PDF files", type="pdf", accept_multiple_files=True)
 
+if uploaded_files:
+    # Save uploaded files temporarily
+    file_paths = []
+    for idx, uploaded_file in enumerate(uploaded_files):
+        temp_file_path = f"temp_file_{idx}.pdf"
+        with open(temp_file_path, "wb") as f:
+            f.write(uploaded_file.read())
+        file_paths.append(temp_file_path)
+    
+    # Compare PDFs and create a retrieval chain
+    qa_chain = compare_pdfs(file_paths)
 
-def main():
-    st.set_page_config("Chat PDF")
-    st.header("Chat with PDF using Gemini💁")
+    # Chatbot interaction
+    st.subheader("Ask questions about the uploaded documents:")
+    user_query = st.text_input("Enter your query")
 
-    user_question = st.text_input("Ask a Question from the PDF Files")
+    if user_query:
+        response = process_query(user_query, qa_chain)
+        st.write("Answer:", response)
 
-    if user_question:
-        user_input(user_question)
-
-    with st.sidebar:
-        st.title("Menu:")
-        pdf_docs = st.file_uploader("Upload your PDF Files and Click on the Submit & Process Button", accept_multiple_files=True)
-        if st.button("Submit & Process"):
-            with st.spinner("Processing..."):
-                raw_text = get_pdf_text(pdf_docs)
-                text_chunks = get_text_chunks(raw_text)
-                get_vector_store(text_chunks)
-                st.success("Done")
-
-
-
-if __name__ == "__main__":
-    main()
+    # Display uploaded PDF names
+    st.write("Uploaded PDFs:")
+    for uploaded_file in uploaded_files:
+        st.write(uploaded_file.name)
