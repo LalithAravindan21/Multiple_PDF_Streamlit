@@ -1,9 +1,4 @@
-python==3.10
-streamlit==1.40.1
-google-generativeai
-python-dotenv
+streamlit
+streamlit_chat
 langchain
-PyPDF2
-chromadb
-faiss-cpu
-langchain_google_genai
+sentence_transformers
