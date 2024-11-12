@@ -1,88 +1,106 @@
 import streamlit as st
 from PyPDF2 import PdfReader
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-from transformers import pipeline
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 import os
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+import google.generativeai as genai
+from langchain.vectorstores import FAISS
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.chains.question_answering import load_qa_chain
+from langchain.prompts import PromptTemplate
+from dotenv import load_dotenv
 
-# Function to extract text from a PDF
-def extract_text_from_pdf(pdf_file):
-    pdf_reader = PdfReader(pdf_file)
-    text = ""
-    for page in pdf_reader.pages:
-        text += page.extract_text()
-    return text
+load_dotenv()
+os.getenv("GOOGLE_API_KEY")
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
-# Function to compare documents based on cosine similarity
-def compare_documents(doc1, doc2):
-    # Convert documents to a list of text
-    documents = [doc1, doc2]
 
-    # Initialize TF-IDF Vectorizer
-    vectorizer = TfidfVectorizer(stop_words='english')
 
-    # Convert documents into TF-IDF vectors
-    tfidf_matrix = vectorizer.fit_transform(documents)
 
-    # Calculate cosine similarity
-    similarity_matrix = cosine_similarity(tfidf_matrix)
 
-    # Return similarity score between the two documents
-    return similarity_matrix[0, 1]
 
-# Function to generate insights based on document content (using transformers)
-def generate_insights(text):
-    summarizer = pipeline("summarization")
-    summary = summarizer(text, max_length=200, min_length=50, do_sample=False)
-    return summary[0]['summary_text']
+def get_pdf_text(pdf_docs):
+    text=""
+    for pdf in pdf_docs:
+        pdf_reader= PdfReader(pdf)
+        for page in pdf_reader.pages:
+            text+= page.extract_text()
+    return  text
 
-# Function to answer questions from document content using QA pipeline
-def answer_question(question, context):
-    qa_pipeline = pipeline("question-answering")
-    result = qa_pipeline(question=question, context=context)
-    return result['answer']
 
-# Streamlit app
+
+def get_text_chunks(text):
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=10000, chunk_overlap=1000)
+    chunks = text_splitter.split_text(text)
+    return chunks
+
+
+def get_vector_store(text_chunks):
+    embeddings = GoogleGenerativeAIEmbeddings(model = "models/embedding-001")
+    vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
+    vector_store.save_local("faiss_index")
+
+
+def get_conversational_chain():
+
+    prompt_template = """
+    Answer the question as detailed as possible from the provided context, make sure to provide all the details, if the answer is not in
+    provided context just say, "answer is not available in the context", don't provide the wrong answer\n\n
+    Context:\n {context}?\n
+    Question: \n{question}\n
+
+    Answer:
+    """
+
+    model = ChatGoogleGenerativeAI(model="gemini-pro",
+                             temperature=0.3)
+
+    prompt = PromptTemplate(template = prompt_template, input_variables = ["context", "question"])
+    chain = load_qa_chain(model, chain_type="stuff", prompt=prompt)
+
+    return chain
+
+
+
+def user_input(user_question):
+    embeddings = GoogleGenerativeAIEmbeddings(model = "models/embedding-001")
+    
+    new_db = FAISS.load_local("faiss_index", embeddings)
+    docs = new_db.similarity_search(user_question)
+
+    chain = get_conversational_chain()
+
+    
+    response = chain(
+        {"input_documents":docs, "question": user_question}
+        , return_only_outputs=True)
+
+    print(response)
+    st.write("Reply: ", response["output_text"])
+
+
+
+
 def main():
-    st.title("PDF Document Comparison & Assistant")
-    st.write("This app compares PDF documents, generates insights, and answers questions about the documents.")
-    
-    # File upload
-    uploaded_files = st.file_uploader("Upload PDF files", type="pdf", accept_multiple_files=True)
-    
-    if len(uploaded_files) == 2:
-        # Extract text from uploaded PDFs
-        pdf_texts = []
-        for uploaded_file in uploaded_files:
-            text = extract_text_from_pdf(uploaded_file)
-            pdf_texts.append(text)
+    st.set_page_config("Chat PDF")
+    st.header("Chat with PDF using Gemini💁")
 
-        # Compare documents
-        similarity_score = compare_documents(pdf_texts[0], pdf_texts[1])
-        st.write(f"Similarity score between the two documents: {similarity_score:.2f}")
+    user_question = st.text_input("Ask a Question from the PDF Files")
 
-        # Generate insights
-        st.subheader("Generated Insights")
-        document_1_summary = generate_insights(pdf_texts[0])
-        document_2_summary = generate_insights(pdf_texts[1])
+    if user_question:
+        user_input(user_question)
 
-        st.write(f"Document 1 Summary: {document_1_summary}")
-        st.write(f"Document 2 Summary: {document_2_summary}")
+    with st.sidebar:
+        st.title("Menu:")
+        pdf_docs = st.file_uploader("Upload your PDF Files and Click on the Submit & Process Button", accept_multiple_files=True)
+        if st.button("Submit & Process"):
+            with st.spinner("Processing..."):
+                raw_text = get_pdf_text(pdf_docs)
+                text_chunks = get_text_chunks(raw_text)
+                get_vector_store(text_chunks)
+                st.success("Done")
 
-        # QA Section
-        st.subheader("Ask a Question About the Documents")
-        question = st.text_input("Enter your question:")
-        
-        if question:
-            # Combine both documents into one context for QA
-            combined_text = pdf_texts[0] + "\n\n" + pdf_texts[1]
-            answer = answer_question(question, combined_text)
-            st.write(f"Answer: {answer}")
 
-    elif len(uploaded_files) > 2:
-        st.warning("Please upload exactly two PDF files for comparison.")
-    elif len(uploaded_files) == 0:
-        st.warning("Please upload two PDF files to compare.")
 
 if __name__ == "__main__":
     main()
