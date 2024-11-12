@@ -1,4 +1,7 @@
-streamlit
-streamlit_chat
-langchain
-sentence_transformers
+streamlit==1.18.1
+PyPDF2==3.0.1
+langchain==0.0.184
+openai==0.27.6
+python-dotenv==1.0.0
+faiss-cpu==1.7.4
+tiktoken==0.4.0
